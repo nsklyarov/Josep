@@ -23,8 +23,13 @@ type
   end;
 
 function EncodeJWT(const PayloadJSON: string; const Secret: string): string;
+
 function VerifyJWT(const Token, Secret: string): Boolean;
-function DecodeAndVerifyJWT(const Token, Secret: string): TJWTValidationResult;
+
+function DecodeAndVerifyJWT(const Token, Secret: string): TJWTValidationResult; overload;
+
+function DecodeAndVerifyJWT(const Token, Secret: string;
+  const ExpectedIssuer, ExpectedSubject, ExpectedAudience, ExpectedJTI, ExpectedTyp: string): TJWTValidationResult; overload;
 
 implementation
 
@@ -127,14 +132,33 @@ begin
 end;
 
 function DecodeAndVerifyJWT(const Token, Secret: string): TJWTValidationResult;
+begin
+  Result := DecodeAndVerifyJWT(Token, Secret, '', '', '', '', '');
+end;
+
+function DecodeAndVerifyJWT(const Token, Secret: string;
+  const ExpectedIssuer, ExpectedSubject, ExpectedAudience, ExpectedJTI, ExpectedTyp: string): TJWTValidationResult;
 var
   Parts: TArray<string>;
   HeaderEnc, PayloadEnc, SignatureEnc, Data: string;
   HeaderJSON, PayloadJSON: string;
   ExpectedSignature, ActualSignature: TBytes;
-  JSONData: TJSONData;
+  JSONData, HeaderData: TJSONData;
   ExpUnix, NbfUnix, IatUnix, NowUnix: Int64;
   JsonNode: TJSONData;
+
+  function CheckStringClaim(const ClaimName, ExpectedValue: string; JSONObj: TJSONData): Boolean;
+  var
+    Node: TJSONData;
+  begin
+    Result := True;
+    if ExpectedValue = '' then Exit;
+
+    Node := JSONObj.FindPath(ClaimName);
+    if (Node = nil) or (Node.AsString <> ExpectedValue) then
+      Result := False;
+  end;
+
 begin
   Result.IsValid := False;
 
@@ -162,9 +186,29 @@ begin
   SignatureEnc := Parts[2];
 
   HeaderJSON := TEncoding.UTF8.GetString(Base64URLDecode(HeaderEnc));
+  PayloadJSON := TEncoding.UTF8.GetString(Base64URLDecode(PayloadEnc));
+
+  try
+    HeaderData := GetJSON(HeaderJSON);
+    PayloadJSON := Trim(PayloadJSON);
+    JSONData := GetJSON(PayloadJSON);
+  except
+    on E: Exception do
+    begin
+      Result.ErrorMessage := 'Invalid JSON format in token';
+      Exit;
+    end;
+  end;
+
   if not HeaderJSON.Contains('"alg":"HS256"') then
   begin
     Result.ErrorMessage := 'Unsupported algorithm';
+    Exit;
+  end;
+
+  if (ExpectedTyp <> '') and (not CheckStringClaim('typ', ExpectedTyp, HeaderData)) then
+  begin
+    Result.ErrorMessage := Format('typ claim mismatch (expected "%s")', [ExpectedTyp]);
     Exit;
   end;
 
@@ -178,62 +222,69 @@ begin
     Exit;
   end;
 
-  // Decode and validate payload
-  PayloadJSON := TEncoding.UTF8.GetString(Base64URLDecode(PayloadEnc));
-  Result.PayloadJSON := PayloadJSON;
+  NowUnix := DateTimeToUnix(Now);
 
-  try
-    JSONData := GetJSON(PayloadJSON);
-    try
-      NowUnix := DateTimeToUnix(Now);
+  JsonNode := JSONData.FindPath('exp');
+  if JsonNode <> nil then
+    ExpUnix := StrToInt64Def(JsonNode.AsString, -1)
+  else
+    ExpUnix := -1;
 
-      JsonNode := JSONData.FindPath('exp');
-      if JsonNode <> nil then
-        ExpUnix := StrToInt64Def(JsonNode.AsString, -1)
-      else
-        ExpUnix := -1;
-
-      if (ExpUnix > 0) and (NowUnix >= ExpUnix) then
-      begin
-        Result.ErrorMessage := 'Token has expired';
-        Exit;
-      end;
-
-      JsonNode := JSONData.FindPath('nbf');
-      if JsonNode <> nil then
-        NbfUnix := StrToInt64Def(JsonNode.AsString, -1)
-      else
-        NbfUnix := -1;
-
-      if (NbfUnix > 0) and (NowUnix < NbfUnix) then
-      begin
-        Result.ErrorMessage := 'Token is not valid yet (nbf)';
-        Exit;
-      end;
-
-      JsonNode := JSONData.FindPath('iat');
-      if JsonNode <> nil then
-        IatUnix := StrToInt64Def(JsonNode.AsString, -1)
-      else
-        IatUnix := -1;
-
-      if (IatUnix > 0) and (NowUnix + 60 < IatUnix) then
-      begin
-        Result.ErrorMessage := 'Token issued in the future (iat)';
-        Exit;
-      end;
-
-    finally
-      JSONData.Free;
-    end;
-  except
-    on E: Exception do
-    begin
-      Result.ErrorMessage := 'Invalid JSON in payload: ' + E.Message;
-      Exit;
-    end;
+  if (ExpUnix > 0) and (NowUnix >= ExpUnix) then
+  begin
+    Result.ErrorMessage := 'Token has expired';
+    Exit;
   end;
 
+  JsonNode := JSONData.FindPath('nbf');
+  if JsonNode <> nil then
+    NbfUnix := StrToInt64Def(JsonNode.AsString, -1)
+  else
+    NbfUnix := -1;
+
+  if (NbfUnix > 0) and (NowUnix < NbfUnix) then
+  begin
+    Result.ErrorMessage := 'Token is not valid yet (nbf)';
+    Exit;
+  end;
+
+  JsonNode := JSONData.FindPath('iat');
+  if JsonNode <> nil then
+    IatUnix := StrToInt64Def(JsonNode.AsString, -1)
+  else
+    IatUnix := -1;
+
+  if (IatUnix > 0) and (NowUnix + 60 < IatUnix) then
+  begin
+    Result.ErrorMessage := 'Token issued in the future (iat)';
+    Exit;
+  end;
+
+  if not CheckStringClaim('iss', ExpectedIssuer, JSONData) then
+  begin
+    Result.ErrorMessage := Format('iss claim mismatch (expected "%s")', [ExpectedIssuer]);
+    Exit;
+  end;
+
+  if not CheckStringClaim('sub', ExpectedSubject, JSONData) then
+  begin
+    Result.ErrorMessage := Format('sub claim mismatch (expected "%s")', [ExpectedSubject]);
+    Exit;
+  end;
+
+  if not CheckStringClaim('aud', ExpectedAudience, JSONData) then
+  begin
+    Result.ErrorMessage := Format('aud claim mismatch (expected "%s")', [ExpectedAudience]);
+    Exit;
+  end;
+
+  if not CheckStringClaim('jti', ExpectedJTI, JSONData) then
+  begin
+    Result.ErrorMessage := Format('jti claim mismatch (expected "%s")', [ExpectedJTI]);
+    Exit;
+  end;
+
+  Result.PayloadJSON := PayloadJSON;
   Result.IsValid := True;
 end;
 

@@ -68,6 +68,36 @@ begin
   Assert(not Result.IsValid and (Pos('token must consist', LowerCase(Result.ErrorMessage)) > 0), 'Should detect bad format');
 end;
 
+procedure Test_ClaimsMatch;
+var
+  Secret, Payload, Token: string;
+  Result: TJWTValidationResult;
+begin
+  Secret := 'secret';
+  Payload := Format(
+    '{"iss":"issuer1","sub":"user1","aud":"aud1","jti":"tokenid","typ":"JWT","exp":%d}',
+    [DateTimeToUnix(Now) + 3600]);
+  Token := EncodeJWT(Payload, Secret);
+
+  Result := DecodeAndVerifyJWT(Token, Secret, 'issuer1', 'user1', 'aud1', 'tokenid', 'JWT');
+  Assert(Result.IsValid, 'Claims should match and token be valid');
+
+  Result := DecodeAndVerifyJWT(Token, Secret, 'wrongissuer', 'user1', 'aud1', 'tokenid', 'JWT');
+  Assert(not Result.IsValid and (Pos('iss', LowerCase(Result.ErrorMessage)) > 0), 'Should detect iss mismatch');
+
+  Result := DecodeAndVerifyJWT(Token, Secret, 'issuer1', 'wrongsub', 'aud1', 'tokenid', 'JWT');
+  Assert(not Result.IsValid and (Pos('sub', LowerCase(Result.ErrorMessage)) > 0), 'Should detect sub mismatch');
+
+  Result := DecodeAndVerifyJWT(Token, Secret, 'issuer1', 'user1', 'wrongaud', 'tokenid', 'JWT');
+  Assert(not Result.IsValid and (Pos('aud', LowerCase(Result.ErrorMessage)) > 0), 'Should detect aud mismatch');
+
+  Result := DecodeAndVerifyJWT(Token, Secret, 'issuer1', 'user1', 'aud1', 'wrongjti', 'JWT');
+  Assert(not Result.IsValid and (Pos('jti', LowerCase(Result.ErrorMessage)) > 0), 'Should detect jti mismatch');
+
+  Result := DecodeAndVerifyJWT(Token, Secret, 'issuer1', 'user1', 'aud1', 'tokenid', 'wrongtyp');
+  Assert(not Result.IsValid and (Pos('typ', LowerCase(Result.ErrorMessage)) > 0), 'Should detect typ mismatch');
+end;
+
 begin
   Writeln('🔎 Running JWT tests...');
 
@@ -76,6 +106,7 @@ begin
   Test_ExpiredToken;
   Test_NotBefore;
   Test_MalformedToken;
+  Test_ClaimsMatch;
 
   Writeln('✅ All tests passed');
 end.
